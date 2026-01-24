@@ -1,0 +1,20 @@
+linkify-it-py==2.0.3
+  uc-micro-py==1.0.3
+mutagen==1.47.0
+pipdeptree==2.30.0
+  packaging==26.0
+  pip==25.3
+textual==7.3.0
+  markdown-it-py==4.0.0
+    mdurl==0.1.2
+  mdit-py-plugins==0.5.0
+    markdown-it-py==4.0.0
+      mdurl==0.1.2
+  platformdirs==4.5.1
+  Pygments==2.19.2
+  rich==14.3.0
+    markdown-it-py==4.0.0
+      mdurl==0.1.2
+    Pygments==2.19.2
+  typing_extensions==4.15.0
+yt-dlp==2025.12.8

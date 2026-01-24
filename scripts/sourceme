@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# NOTE: Source this file to start developing
+
+if command -v python3.14 >/dev/null 2>&1; then
+  PYTHON_BIN="python3.14"
+else
+  echo "[ERROR] Python 3.14 is required."
+  return 1 2>/dev/null || exit 1
+fi
+
+if [ ! -d venv ]; then
+  $PYTHON_BIN -m venv venv
+  source venv/bin/activate
+  pip install -r requirements.txt
+else
+  source venv/bin/activate
+fi
+
+export PYTHONPATH="$(pwd)"
