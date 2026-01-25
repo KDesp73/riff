@@ -1,67 +1,115 @@
-from typing import Optional
-from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, ListView, ListItem, Label, Static, ProgressBar
-from textual.binding import Binding
+from typing import Optional, Dict, List
 from pathlib import Path
 import threading
+
+from textual.app import App, ComposeResult
+from textual.widgets import (
+    Header,
+    Footer,
+    ListView,
+    ListItem,
+    Static,
+    ProgressBar,
+)
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 
 from downloader import get_artist_albums, get_album_tracks
 from converter import convert_audio
 from metadata import set_metadata
 
 
+# -----------------------------
+# Album item
+# -----------------------------
 class AlbumItem(ListItem):
     def __init__(self, title: str, url: str):
         self.title = title
         self.url = url
         self.selected = False
-        self.label = Label()
+        self.label = Static()
         super().__init__(self.label)
-        self._update_label()
+        self._update()
 
-    def _update_label(self):
+    def _update(self):
         prefix = "[✓] " if self.selected else "[ ] "
         self.label.update(prefix + self.title)
 
     def toggle(self):
         self.selected = not self.selected
-        self._update_label()
+        self._update()
 
 
+# -----------------------------
+# Download / conversion status
+# -----------------------------
 class DownloadStatus(Static):
-    """Widget to show live download/conversion progress with bars."""
-
     def compose(self) -> ComposeResult:
-        self.status_label = Label("Idle")
-        self.download_bar_label = Label("Download Progress:")
-        self.download_bar = ProgressBar(total=100)
-        self.conversion_bar_label = Label("Conversion Progress:")
-        self.conversion_bar = ProgressBar(total=100)
+        self.status = Static("Idle")
+        self.dl_bar = ProgressBar(total=100)
+        self.cv_bar = ProgressBar(total=100)
 
-        yield self.status_label
-        yield self.download_bar_label
-        yield self.download_bar
-        yield self.conversion_bar_label
-        yield self.conversion_bar
+        yield self.status
+        yield Static("Download")
+        yield self.dl_bar
+        yield Static("Conversion")
+        yield self.cv_bar
 
-    def update_status(self, msg: str):
-        self.status_label.update(msg)
+    def msg(self, text: str):
+        self.status.update(text)
 
-    def update_download(self, percent: float):
-        self.download_bar.update(progress=int(percent))
+    def dl(self, pct: float):
+        self.dl_bar.update(progress=int(pct))
 
-    def update_conversion(self, percent: float):
-        self.conversion_bar.update(progress=int(percent))
+    def cv(self, pct: float):
+        self.cv_bar.update(progress=int(pct))
 
 
+# -----------------------------
+# Track preview panel (RIGHT)
+# -----------------------------
+class TrackList(Static):
+    def compose(self) -> ComposeResult:
+        self.container = Vertical()
+        yield self.container
+
+    def show(self, tracks: List[Dict[str, str]]):
+        if not self.is_mounted:
+            return
+
+        self.container.remove_children()
+
+        if not tracks:
+            self.container.mount(Static("—"))
+            return
+
+        for i, t in enumerate(tracks, 1):
+            filename = f"{i:02d} - {t['title']}.webm"
+            text = (
+                f"{i:02d}. {t['title']}\n"
+                f"    {filename}\n"
+                f"    {t['url']}"
+            )
+            self.container.mount(Static(text))
+
+
+# -----------------------------
+# Main app
+# -----------------------------
 class AlbumSelector(App):
     CSS = """
-    ListView {
-        height: 1fr;
+    Horizontal { height: 1fr; }
+
+    ListView { width: 40%; }
+
+    TrackList {
+        width: 60%;
+        padding: 1 2;
+        border: round $primary;
     }
 
     DownloadStatus {
-        height: 6;
+        height: 7;
         padding: 1 2;
         background: $panel;
     }
@@ -70,144 +118,188 @@ class AlbumSelector(App):
     BINDINGS = [
         Binding("space", "toggle", "Select"),
         Binding("d", "download", "Download"),
-        Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, handle: str, artist: str, output_dir: str = "output", target_format: str = "webm", cookies: Optional[str] = None):
+    def __init__(
+        self,
+        handle: str,
+        artist: str,
+        output_dir="output",
+        target_format="webm",
+        cookies: Optional[str] = None,
+    ):
         super().__init__()
         self.handle = handle
         self.artist = artist
         self.output_dir = Path(output_dir)
         self.target_format = target_format
-        self.albums = get_artist_albums(handle)
         self.cookies = cookies
 
+        self.albums = get_artist_albums(handle)
+        self.album_tracks: Dict[str, List[Dict[str, str]]] = {}
+
+        self._last_index: Optional[int] = None
+
+    # -------------------------
+    # UI
+    # -------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        self.list_view = ListView()
-        yield self.list_view
+
+        with Horizontal():
+            self.list_view = ListView()
+            self.track_panel = TrackList()
+            yield self.list_view
+            yield self.track_panel
+
         self.status = DownloadStatus()
         yield self.status
         yield Footer()
 
     def on_mount(self):
-        for album in self.albums:
-            self.list_view.append(AlbumItem(album["title"], album["url"]))
+        for a in self.albums:
+            self.list_view.append(AlbumItem(a["title"], a["url"]))
 
+        threading.Thread(target=self._preload_tracks, daemon=True).start()
+        self.set_interval(0.1, self._poll_highlight)
+
+    # -------------------------
+    # Track preloading
+    # -------------------------
+    def _preload_tracks(self):
+        for album in self.albums:
+            try:
+                self.album_tracks[album["url"]] = get_album_tracks(album["url"])
+            except Exception as e:
+                self.album_tracks[album["url"]] = []
+                self.call_from_thread(
+                    self.status.msg,
+                    f"Failed to preload {album['title']}: {e}",
+                )
+
+    # -------------------------
+    # Highlight tracking (arrow keys)
+    # -------------------------
+    def _poll_highlight(self):
+        index = self.list_view.index
+        if index == self._last_index:
+            return
+
+        self._last_index = index
+
+        if index is None:
+            self.track_panel.show([])
+            return
+
+        item = self.list_view.children[index]
+        if isinstance(item, AlbumItem):
+            tracks = self.album_tracks.get(item.url, [])
+            self.track_panel.show(tracks)
+        else:
+            self.track_panel.show([])
+
+    # -------------------------
+    # Actions
+    # -------------------------
     def action_toggle(self):
-        item = self.list_view.highlighted_child
+        index = self.list_view.index
+        if index is None:
+            return
+
+        item = self.list_view.children[index]
         if isinstance(item, AlbumItem):
             item.toggle()
 
     def action_download(self):
-        selected_items = [
-            item for item in self.list_view.children
-            if isinstance(item, AlbumItem) and item.selected
+        selected = [
+            i for i in self.list_view.children
+            if isinstance(i, AlbumItem) and i.selected
         ]
 
-        if not selected_items:
+        if not selected:
             self.notify("No albums selected", severity="warning")
             return
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         def worker():
-            try:
-                all_files = []
+            from yt_dlp import YoutubeDL
+            import time
 
-                # Step 1: Download albums track by track
-                from yt_dlp import YoutubeDL
+            all_files: List[Path] = []
 
-                for album_item in selected_items:
-                    album_dir = self.output_dir / album_item.title
-                    album_dir.mkdir(exist_ok=True)
+            for album in selected:
+                album_dir = self.output_dir / album.title
+                album_dir.mkdir(exist_ok=True)
 
-                    tracks = get_album_tracks(album_item.url)
-                    total_tracks = len(tracks)
-                    downloaded = 0
+                tracks = self.album_tracks.get(album.url, [])
+                total = len(tracks)
 
-                    for idx, track_url in enumerate(tracks, 1):
-                        def progress_hook(d):
-                            filename = d.get("filename", "")
-                            status = d.get("status")
-                            if status == "downloading":
-                                pct = d.get("_percent_str", "").strip()
-                                self.call_from_thread(
-                                    self.status.update_status,
-                                    f"⬇ {filename} {pct} ({downloaded+1}/{total_tracks})"
-                                )
-                            elif status == "finished":
-                                self.call_from_thread(
-                                    self.status.update_status,
-                                    f"✔ Finished {filename}"
-                                )
-                                all_files.append(Path(filename))
+                for idx, track in enumerate(tracks, 1):
+                    url = track["url"]
 
-                        ydl_opts = {
-                            "format": "bestaudio/best",
-                            "outtmpl": str(album_dir / f"{idx:02d} - %(title)s.%(ext)s"),
-                            "progress_hooks": [progress_hook],
-                            "retries": 10,
-                            "fragment_retries": 10,
-                            "socket_timeout": 30,
-                            "source_address": "0.0.0.0",  # Force IPv4
-                            "noplaylist": True,  # single track
-                            "ignoreerrors": True
-                        }
-                        if self.cookies:
-                            if self.cookies.lower() in ["chrome", "firefox", "edge"]:
-                                ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
-                            else:
-                                ydl_opts["cookiefile"] = self.cookies
+                    def hook(d):
+                        if d["status"] == "downloading":
+                            pct = d.get("_percent_str", "").strip()
+                            self.call_from_thread(
+                                self.status.msg,
+                                f"⬇ {pct} ({idx}/{total})",
+                            )
+                        elif d["status"] == "finished":
+                            all_files.append(Path(d["filename"]))
 
-                        # Download single track
-                        with YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([track_url])
-                        downloaded += 1
-                        self.call_from_thread(
-                            self.status.update_download,
-                            int((downloaded / total_tracks) * 100)
-                        )
+                    ydl_opts = {
+                        "format": "bestaudio/best",
+                        "outtmpl": str(album_dir / f"{idx:02d} - %(title)s.%(ext)s"),
+                        "progress_hooks": [hook],
+                        "noplaylist": True,
+                        "ignoreerrors": True,
+                    }
 
-                # Step 2: Conversion & Metadata
-                total_files = len(all_files)
-                converted_count = 0
+                    if self.cookies:
+                        if self.cookies.lower() in {"chrome", "firefox", "edge"}:
+                            ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
+                        else:
+                            ydl_opts["cookiefile"] = self.cookies
 
-                for file in all_files:
-                    out_file = Path(file)
-                    album_name = file.parent.name
+                    with YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
 
-                    # Convert if needed
-                    if self.target_format != file.suffix.lstrip("."):
-                        self.call_from_thread(
-                            self.status.update_status,
-                            f"Converting {file.name} → {self.target_format}"
-                        )
-                        out_file = Path(convert_audio(str(file), self.target_format, str(file.parent)))
-                        file.unlink()  # remove original
+                    self.call_from_thread(
+                        self.status.dl,
+                        (idx / total) * 100,
+                    )
 
-                    filename = file.stem
-                    track_number = filename.split("-")[0].strip()
-                    title = [part.strip() for part in filename.split("-")][-1]
+            total = len(all_files)
+            done = 0
 
-                    metadata = {
+            for file in all_files:
+                out = file
+                album = file.parent.name
+
+                if self.target_format != file.suffix.lstrip("."):
+                    out = Path(
+                        convert_audio(str(file), self.target_format, str(file.parent))
+                    )
+                    file.unlink()
+
+                stem = out.stem
+                track_number = stem.split("-")[0].strip()
+                title = stem.split("-", 1)[-1].strip()
+
+                set_metadata(
+                    str(out),
+                    {
                         "artist": self.artist,
-                        "album": album_name,
+                        "album": album,
                         "title": title,
                         "tracknumber": track_number,
-                    }
-                    set_metadata(str(out_file), metadata)
+                    },
+                )
 
-                    converted_count += 1
-                    percent = (converted_count / total_files) * 100
-                    self.call_from_thread(self.status.update_conversion, percent)
-                    self.call_from_thread(self.status.update_status, f"Processed {out_file.name}")
+                done += 1
+                self.call_from_thread(self.status.cv, (done / total) * 100)
 
-                self.call_from_thread(self.status.update_status, "All albums processed ✔")
-                self.call_from_thread(self.status.update_download, 100)
-                self.call_from_thread(self.status.update_conversion, 100)
-
-            except Exception as e:
-                self.call_from_thread(self.status.update_status, f"Error: {e}")
+            self.call_from_thread(self.status.msg, "All albums processed ✔")
 
         threading.Thread(target=worker, daemon=True).start()
