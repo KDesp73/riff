@@ -77,13 +77,14 @@ def convert(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Discography downloader CLI")
+    parser.add_argument("--version", action="store_true")
     parser.add_argument("--artist", type=str, help="Artist name")
     parser.add_argument("--format", type=str, default="mp3",
                         choices=["mp3", "webm", "flac", "m4a"], help="Target file format")
     parser.add_argument("--input", type=str, help="Input path for metadata/conversion")
     parser.add_argument("--output", type=str, default=".", help="Output directory")
 
-    subparsers = parser.add_subparsers(title="commands", dest="command", required=True)
+    subparsers = parser.add_subparsers(title="commands", dest="command")
 
     browse_parser = subparsers.add_parser("browse", help="Select and download albums interactively")
     browse_parser.add_argument("--handle", required=True, type=str, help="YouTube artist handle")
@@ -93,6 +94,10 @@ def main():
     subparsers.add_parser("convert", help="Convert files to another format")
 
     args = parser.parse_args()
+
+    if args.version:
+        print("riff v1.0.0")
+        return
 
     if args.command == "browse":
         browse(args)
