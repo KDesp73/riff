@@ -5,7 +5,7 @@ from textual.binding import Binding
 from pathlib import Path
 import threading
 
-from downloader import download_albums, get_artist_albums, get_album_tracks
+from downloader import get_artist_albums, get_album_tracks
 from converter import convert_audio
 from metadata import set_metadata
 
@@ -115,30 +115,32 @@ class AlbumSelector(App):
             try:
                 all_files = []
 
+                # Step 1: Download albums
                 for album_item in selected_items:
                     album_dir = self.output_dir / album_item.title
                     album_dir.mkdir(exist_ok=True)
 
-                    # Get track URLs
                     tracks = get_album_tracks(album_item.url)
 
-                    # Progress hook
                     def progress_hook(d):
-                        status = d.get("status")
                         filename = d.get("filename", "")
+                        status = d.get("status")
                         if status == "downloading":
-                            percent = d.get("_percent_str", "").strip()
-                            self.call_from_thread(self.status.update_status, f"⬇ {filename} {percent}")
+                            pct = d.get("_percent_str", "").strip()
+                            self.call_from_thread(self.status.update_status, f"⬇ {filename} {pct}")
                         elif status == "finished":
                             self.call_from_thread(self.status.update_status, f"✔ Finished {filename}")
                             all_files.append(Path(filename))
 
-                    # Synchronously download the album
                     from yt_dlp import YoutubeDL
                     ydl_opts = {
                         "format": "bestaudio/best",
                         "outtmpl": str(album_dir / "%(playlist_index)02d - %(title)s.%(ext)s"),
                         "progress_hooks": [progress_hook],
+                        "retries": 10,
+                        "fragment_retries": 10,
+                        "socket_timeout": 30,
+                        "source_address": "0.0.0.0",  # Force IPv4 to avoid network errors
                         "noplaylist": False,
                     }
                     if self.cookies:
@@ -147,21 +149,32 @@ class AlbumSelector(App):
                         else:
                             ydl_opts["cookiefile"] = self.cookies
 
+                    # Synchronous download per album
+                    self.call_from_thread(
+                        self.status.update_status,
+                        f"Starting download: {album_item.title} ({len(tracks)} tracks)"
+                    )
                     with YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([album_item.url])  # <-- blocks until all tracks are fully downloaded
+                        ydl.download([album_item.url])
 
-                # Conversion & metadata
+                # Step 2: Conversion & Metadata
+                total_files = len(all_files)
+                converted_count = 0
+
                 for file in all_files:
                     out_file = Path(file)
+                    album_name = file.parent.name
+
+                    # Convert if necessary
                     if self.target_format != file.suffix.lstrip("."):
                         self.call_from_thread(
                             self.status.update_status,
                             f"Converting {file.name} → {self.target_format}"
                         )
                         out_file = Path(convert_audio(str(file), self.target_format, str(file.parent)))
-                        file.unlink()
+                        file.unlink()  # remove original
 
-                    # Metadata
+                    # Extract track number and title from filename
                     filename = file.stem
                     track_number = filename.split("-")[0].strip()
                     title = [part.strip() for part in filename.split("-")][-1]
@@ -174,7 +187,14 @@ class AlbumSelector(App):
                     }
                     set_metadata(str(out_file), metadata)
 
+                    converted_count += 1
+                    percent = (converted_count / total_files) * 100
+                    self.call_from_thread(self.status.update_conversion, percent)
+                    self.call_from_thread(self.status.update_status, f"Processed {out_file.name}")
+
                 self.call_from_thread(self.status.update_status, "All albums processed ✔")
+                self.call_from_thread(self.status.update_download, 100)
+                self.call_from_thread(self.status.update_conversion, 100)
 
             except Exception as e:
                 self.call_from_thread(self.status.update_status, f"Error: {e}")
