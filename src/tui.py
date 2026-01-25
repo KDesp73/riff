@@ -119,6 +119,7 @@ class AlbumSelector(App):
     BINDINGS = [
         Binding("space", "toggle", "Select"),
         Binding("d", "download", "Download"),
+        Binding("l", "toggle_lyrics", "Download Lyrics (default: True)"),
     ]
 
     def __init__(
@@ -140,6 +141,8 @@ class AlbumSelector(App):
         self.album_tracks: Dict[str, List[Dict[str, str]]] = {}
 
         self._last_index: Optional[int] = None
+
+        self.download_lyrics = True
 
     # -------------------------
     # UI
@@ -210,6 +213,10 @@ class AlbumSelector(App):
         item = self.list_view.children[index]
         if isinstance(item, AlbumItem):
             item.toggle()
+
+    def action_toggle_lyrics(self):
+        self.download_lyrics = not self.download_lyrics
+        self.notify(f"Lyrics download: {self.download_lyrics}")
 
     def action_download(self):
         selected = [
@@ -299,10 +306,11 @@ class AlbumSelector(App):
                 )
 
                 # Download lyrics
-                lyrics = get_lyrics(title)
-                if lyrics.get("status") == 200:
-                    lyrics_file = out.with_suffix(".lrc")
-                    lyrics_file.write_text(lyrics.get("lyrics"), encoding="utf-8")
+                if self.download_lyrics:
+                    lyrics = get_lyrics(title)
+                    if lyrics.get("status") == 200:
+                        lyrics_file = out.with_suffix(".lrc")
+                        lyrics_file.write_text(lyrics.get("lyrics"), encoding="utf-8")
 
                 done += 1
                 self.call_from_thread(self.status.cv, (done / total) * 100)
