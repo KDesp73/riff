@@ -4,6 +4,13 @@ mutagen==1.47.0
 pipdeptree==2.30.0
   packaging==26.0
   pip==25.3
+pyinstaller==6.18.0
+  altgraph==0.17.5
+  packaging==26.0
+  pyinstaller-hooks-contrib==2026.0
+    setuptools==80.10.1
+    packaging==26.0
+  setuptools==80.10.1
 textual==7.3.0
   markdown-it-py==4.0.0
     mdurl==0.1.2
