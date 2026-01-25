@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+
+from yt_dlp.plugins import default_plugin_paths
 from tui import AlbumSelector
 from metadata import set_metadata
-from converter import convert_audio, batch_convert
+from converter import convert_audio
 import argparse
 
 def browse(args):
@@ -16,7 +18,8 @@ def browse(args):
         artist=args.artist or args.handle,
         output_dir=str(output_path.resolve()),
         target_format=args.format,
-        cookies=args.cookies
+        cookies=args.cookies,
+        download_lyrics=args.lyrics
     ).run()
 
 
@@ -77,7 +80,7 @@ def convert(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Discography downloader CLI")
-    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--version", action="store_true", help="Print the version and exit")
     parser.add_argument("--artist", type=str, help="Artist name")
     parser.add_argument("--format", type=str, default="mp3",
                         choices=["mp3", "webm", "flac", "m4a"], help="Target file format")
@@ -89,6 +92,7 @@ def main():
     browse_parser = subparsers.add_parser("browse", help="Select and download albums interactively")
     browse_parser.add_argument("--handle", required=True, type=str, help="YouTube artist handle")
     browse_parser.add_argument("--cookies", type=str, help="Path to cookie file or browser name")
+    browse_parser.add_argument("--lyrics", type=bool, help="Download lyrics?", default=False) 
 
     subparsers.add_parser("metadata", help="Apply metadata to files")
     subparsers.add_parser("convert", help="Convert files to another format")
@@ -96,7 +100,7 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        print("riff v1.0.0")
+        print("riff v1.1.0")
         return
 
     if args.command == "browse":

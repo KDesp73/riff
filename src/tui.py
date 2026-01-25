@@ -82,7 +82,7 @@ class TrackItem(ListItem):
         self._update()
 
     def _update(self):
-        prefix = "[bold green]✓[/] " if self.selected else "[ ] "
+        prefix = "[✓] " if self.selected else "[ ] "
         self.label.update(f"{prefix}{self.index:02d}. {self.title}")
 
     def toggle(self):
@@ -115,9 +115,10 @@ class DownloadStatus(Vertical):
 # -----------------------------
 class AlbumSelector(App):
     CSS = """
-    .TopPane { height: 60%; }
+    .CliPane { height: 3; background: $surface; padding: 1 2; border: tall $primary; }
+    .TopPane { height: 50%; }
     .BottomPane { height: 40%; }
-    
+
     ListView { width: 50%; border: solid $primary; }
     DownloadStatus { width: 40%; padding: 1; background: $surface; border: tall $primary; }
     AppLog { 
@@ -125,12 +126,16 @@ class AlbumSelector(App):
         border: tall $primary; 
         padding: 0 2;
     }
-  
-    Static { margin: 0 1; }
+
+    .CliPane {
+        height: 3fr;
+        padding: 0 2;
+        border: tall $primary;
+        background: $surface;
+    }
     """
 
     BINDINGS = [
-        Binding("l", "toggle_lyrics", "Download Lyrics (default: True)"),
         Binding("ctrl+h", "focus_albums", "Focus Albums"),
         Binding("ctrl+l", "focus_tracks", "Focus Tracks"),
         Binding("space", "toggle", "Select/Deselect"),
@@ -138,7 +143,7 @@ class AlbumSelector(App):
         Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, handle, artist, output_dir="output", target_format="mp3", cookies=None):
+    def __init__(self, handle, artist, output_dir="output", target_format="mp3", cookies=None, download_lyrics=True):
         super().__init__()
         self.handle = handle
         self.artist = artist
@@ -151,7 +156,7 @@ class AlbumSelector(App):
 
         self._last_index: Optional[int] = None
 
-        self.download_lyrics = True
+        self.download_lyrics = download_lyrics
 
     # -------------------------
     # UI
@@ -159,6 +164,12 @@ class AlbumSelector(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+
+        # Put CLI info in a Vertical container to enforce height
+        with Vertical(classes="CliPane", id="cli_pane"):
+            cli_text = f"{self.artist} @{self.handle}\nOutput: {self.output_dir}\nFormat: {self.target_format} | Lyrics: {self.download_lyrics}"
+            yield Static(cli_text)
+
         with Horizontal(classes="TopPane"):
             yield ListView(id="album_list")
             yield ListView(id="track_list")
@@ -211,10 +222,6 @@ class AlbumSelector(App):
 
     def action_focus_albums(self):
         self.query_one("#album_list").focus()
-
-    def action_toggle_lyrics(self):
-        self.download_lyrics = not self.download_lyrics
-        self.notify(f"Lyrics download: {self.download_lyrics}")
 
     def action_focus_tracks(self):
         self.query_one("#track_list").focus()
