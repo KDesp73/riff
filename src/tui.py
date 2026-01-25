@@ -17,6 +17,7 @@ from textual.containers import Horizontal, Vertical
 from downloader import get_artist_albums, get_album_tracks
 from converter import convert_audio
 from metadata import set_metadata
+from lyrics import get_lyrics
 
 
 # -----------------------------
@@ -296,6 +297,12 @@ class AlbumSelector(App):
                         "tracknumber": track_number,
                     },
                 )
+
+                # Download lyrics
+                lyrics = get_lyrics(title)
+                if lyrics.get("status") == 200:
+                    lyrics_file = out.with_suffix(".lrc")
+                    lyrics_file.write_text(lyrics.get("lyrics"), encoding="utf-8")
 
                 done += 1
                 self.call_from_thread(self.status.cv, (done / total) * 100)
