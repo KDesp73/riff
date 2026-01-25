@@ -2,26 +2,11 @@
 
 from pathlib import Path
 
-from yt_dlp.plugins import default_plugin_paths
-from tui import AlbumSelector
+from src.tui.app import RiffApp
+from tui import RiffApp, DownloaderScreen
 from metadata import set_metadata
 from converter import convert_audio
 import argparse
-
-def browse(args):
-    """Launch TUI to select and download albums."""
-    output_path = Path(args.output)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    AlbumSelector(
-        handle=args.handle,
-        artist=args.artist or args.handle,
-        output_dir=str(output_path.resolve()),
-        target_format=args.format,
-        cookies=args.cookies,
-        download_lyrics=args.lyrics
-    ).run()
-
 
 def metadata(args):
     """Apply metadata to a file or directory of files."""
@@ -86,14 +71,11 @@ def main():
                         choices=["mp3", "webm", "flac", "m4a"], help="Target file format")
     parser.add_argument("--input", type=str, help="Input path for metadata/conversion")
     parser.add_argument("--output", type=str, default=".", help="Output directory")
+    parser.add_argument("--handle", type=str, help="YouTube artist handle")
+    parser.add_argument("--cookies", type=str, help="Path to cookie file or browser name")
+    parser.add_argument("--lyrics", type=bool, help="Download lyrics?", default=False) 
 
     subparsers = parser.add_subparsers(title="commands", dest="command")
-
-    browse_parser = subparsers.add_parser("browse", help="Select and download albums interactively")
-    browse_parser.add_argument("--handle", required=True, type=str, help="YouTube artist handle")
-    browse_parser.add_argument("--cookies", type=str, help="Path to cookie file or browser name")
-    browse_parser.add_argument("--lyrics", type=bool, help="Download lyrics?", default=False) 
-
     subparsers.add_parser("metadata", help="Apply metadata to files")
     subparsers.add_parser("convert", help="Convert files to another format")
 
@@ -103,12 +85,12 @@ def main():
         print("riff v1.1.0")
         return
 
-    if args.command == "browse":
-        browse(args)
-    elif args.command == "metadata":
+    if args.command == "metadata":
         metadata(args)
     elif args.command == "convert":
         convert(args)
+
+    RiffApp().run()
 
 
 if __name__ == "__main__":

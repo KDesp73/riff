@@ -2,6 +2,7 @@ TODO: output bug
 TODO: artist search
 TODO: settings
 TODO: list failures
+TODO: searching the results (/ for searching, n for next match)
 DONE: single file download from explorer
 DONE: Improve layout
 DONE: Logs (file and ui)
