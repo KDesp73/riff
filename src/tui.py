@@ -1,6 +1,7 @@
 from typing import Optional, Dict, List
 from pathlib import Path
 import threading
+from datetime import datetime
 
 from textual.app import App, ComposeResult
 from textual.widgets import (
@@ -10,126 +11,134 @@ from textual.widgets import (
     ListItem,
     Static,
     ProgressBar,
+    RichLog,
 )
+
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 
-from downloader import get_artist_albums, get_album_tracks
-from converter import convert_audio
+from downloader import get_album_tracks, get_artist_albums
 from metadata import set_metadata
 from lyrics import get_lyrics
-
+from converter import convert_audio
+from utils import extract_track_title
 
 # -----------------------------
-# Album item
+# Logging
+# -----------------------------
+class AppLog(RichLog):
+    """Custom log widget with timestamping."""
+
+    def info(self, msg: str):
+        self.write(f"[bold cyan]INFO[/bold cyan]  [{self._ts()}] {msg}")
+
+    def warn(self, msg: str):
+        self.write(f"[bold yellow]WARN[/bold yellow]  [{self._ts()}] {msg}")
+
+    def error(self, msg: str):
+        self.write(f"[bold red]ERROR[/bold red] [{self._ts()}] {msg}")
+
+    def _ts(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
+# -----------------------------
+# List items
 # -----------------------------
 class AlbumItem(ListItem):
     def __init__(self, title: str, url: str):
+        super().__init__()
         self.title = title
         self.url = url
         self.selected = False
         self.label = Static()
-        super().__init__(self.label)
+
+    def compose(self) -> ComposeResult:
+        yield self.label
+
+    def on_mount(self):
         self._update()
 
     def _update(self):
-        prefix = "[✓] " if self.selected else "[ ] "
-        self.label.update(prefix + self.title)
+        self.label.update(("[✓] " if self.selected else "[ ] ") + self.title)
 
     def toggle(self):
         self.selected = not self.selected
         self._update()
 
+        
+class TrackItem(ListItem):
+    def __init__(self, index: int, title: str, url: str):
+        super().__init__()
+        self.index = index
+        self.title = title
+        self.url = url
+        self.selected = False
+        self.label = Static()
 
-# -----------------------------
-# Download / conversion status
-# -----------------------------
-class DownloadStatus(Static):
     def compose(self) -> ComposeResult:
-        self.status = Static("Idle")
-        self.dl_bar = ProgressBar(total=100)
-        self.cv_bar = ProgressBar(total=100)
+        yield self.label
 
-        yield self.status
-        yield Static("Download")
-        yield self.dl_bar
-        yield Static("Conversion")
-        yield self.cv_bar
+    def on_mount(self):
+        self._update()
 
-    def msg(self, text: str):
-        self.status.update(text)
+    def _update(self):
+        prefix = "[bold green]✓[/] " if self.selected else "[ ] "
+        self.label.update(f"{prefix}{self.index:02d}. {self.title}")
 
-    def dl(self, pct: float):
-        self.dl_bar.update(progress=int(pct))
-
-    def cv(self, pct: float):
-        self.cv_bar.update(progress=int(pct))
-
+    def toggle(self):
+        self.selected = not self.selected
+        self._update()
 
 # -----------------------------
-# Track preview panel (RIGHT)
+# Status widget
 # -----------------------------
-class TrackList(Static):
+class DownloadStatus(Vertical):
+    """Container for progress bars and status text."""
     def compose(self) -> ComposeResult:
-        self.container = Vertical()
-        yield self.container
+        yield Static("Idle", id="status_text")
+        yield Static("Download Progress")
+        yield ProgressBar(total=100, id="dl_bar", show_eta=False)
+        yield Static("Conversion Progress")
+        yield ProgressBar(total=100, id="cv_bar", show_eta=False)
 
-    def show(self, tracks: List[Dict[str, str]]):
-        if not self.is_mounted:
-            return
+    def update_msg(self, text: str):
+        self.query_one("#status_text", Static).update(text)
 
-        self.container.remove_children()
+    def update_dl(self, pct: float):
+        self.query_one("#dl_bar", ProgressBar).progress = pct
 
-        if not tracks:
-            self.container.mount(Static("—"))
-            return
-
-        for i, t in enumerate(tracks, 1):
-            filename = f"{i:02d} - {t['title']}.webm"
-            text = (
-                f"{i:02d}. {t['title']}\n"
-                f"    {filename}\n"
-                f"    {t['url']}"
-            )
-            self.container.mount(Static(text))
-
+    def update_cv(self, pct: float):
+        self.query_one("#cv_bar", ProgressBar).progress = pct
 
 # -----------------------------
-# Main app
+# Main App
 # -----------------------------
 class AlbumSelector(App):
     CSS = """
-    Horizontal { height: 1fr; }
-
-    ListView { width: 40%; }
-
-    TrackList {
-        width: 60%;
-        padding: 1 2;
-        border: round $primary;
+    .TopPane { height: 60%; }
+    .BottomPane { height: 40%; }
+    
+    ListView { width: 50%; border: solid $primary; }
+    DownloadStatus { width: 40%; padding: 1; background: $surface; border: tall $primary; }
+    AppLog { 
+        width: 60%; 
+        border: tall $primary; 
+        padding: 0 2;
     }
-
-    DownloadStatus {
-        height: 7;
-        padding: 1 2;
-        background: $panel;
-    }
+  
+    Static { margin: 0 1; }
     """
 
     BINDINGS = [
-        Binding("space", "toggle", "Select"),
-        Binding("d", "download", "Download"),
         Binding("l", "toggle_lyrics", "Download Lyrics (default: True)"),
+        Binding("ctrl+h", "focus_albums", "Focus Albums"),
+        Binding("ctrl+l", "focus_tracks", "Focus Tracks"),
+        Binding("space", "toggle", "Select/Deselect"),
+        Binding("d", "download", "Start Download"),
+        Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(
-        self,
-        handle: str,
-        artist: str,
-        output_dir="output",
-        target_format="webm",
-        cookies: Optional[str] = None,
-    ):
+    def __init__(self, handle, artist, output_dir="output", target_format="mp3", cookies=None):
         super().__init__()
         self.handle = handle
         self.artist = artist
@@ -137,8 +146,8 @@ class AlbumSelector(App):
         self.target_format = target_format
         self.cookies = cookies
 
-        self.albums = get_artist_albums(handle)
         self.album_tracks: Dict[str, List[Dict[str, str]]] = {}
+        self.current_album: Optional[AlbumItem] = None
 
         self._last_index: Optional[int] = None
 
@@ -147,174 +156,182 @@ class AlbumSelector(App):
     # -------------------------
     # UI
     # -------------------------
+
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header()
+        with Horizontal(classes="TopPane"):
+            yield ListView(id="album_list")
+            yield ListView(id="track_list")
 
-        with Horizontal():
-            self.list_view = ListView()
-            self.track_panel = TrackList()
-            yield self.list_view
-            yield self.track_panel
-
-        self.status = DownloadStatus()
-        yield self.status
+        with Horizontal(classes="BottomPane"):
+            yield DownloadStatus(id="status_area")
+            yield AppLog(id="log_view", highlight=True, markup=True)
+            
         yield Footer()
 
+
     def on_mount(self):
+        self.albums = get_artist_albums(self.handle) 
+        album_list = self.query_one("#album_list", ListView)
         for a in self.albums:
-            self.list_view.append(AlbumItem(a["title"], a["url"]))
+            album_list.append(AlbumItem(a["title"], a["url"]))
+        album_list.focus()
 
+        # Preload tracks in background
         threading.Thread(target=self._preload_tracks, daemon=True).start()
-        self.set_interval(0.1, self._poll_highlight)
 
-    # -------------------------
-    # Track preloading
-    # -------------------------
     def _preload_tracks(self):
+        log = self.query_one("#log_view", AppLog)
         for album in self.albums:
             try:
                 self.album_tracks[album["url"]] = get_album_tracks(album["url"])
             except Exception as e:
                 self.album_tracks[album["url"]] = []
-                self.call_from_thread(
-                    self.status.msg,
-                    f"Failed to preload {album['title']}: {e}",
-                )
+                self.call_from_thread(log.warn, f"Failed preloading: {album['title']}")
 
-    # -------------------------
-    # Highlight tracking (arrow keys)
-    # -------------------------
-    def _poll_highlight(self):
-        index = self.list_view.index
-        if index == self._last_index:
-            return
+    def on_list_view_highlighted(self, event: ListView.Highlighted):
+        if event.list_view.id == "album_list":
+            item = event.item
+            if isinstance(item, AlbumItem):
+                self.current_album = item
+                track_list = self.query_one("#track_list", ListView)
+                track_list.clear()
+                tracks = self.album_tracks.get(item.url, [])
 
-        self._last_index = index
+                for i, t in enumerate(tracks, 1):
+                    track_list.append(TrackItem(i, t["title"], t["url"]))
 
-        if index is None:
-            self.track_panel.show([])
-            return
-
-        item = self.list_view.children[index]
-        if isinstance(item, AlbumItem):
-            tracks = self.album_tracks.get(item.url, [])
-            self.track_panel.show(tracks)
-        else:
-            self.track_panel.show([])
-
-    # -------------------------
-    # Actions
-    # -------------------------
     def action_toggle(self):
-        index = self.list_view.index
-        if index is None:
-            return
+        if self.focused and hasattr(self.focused, "children"):
+            # Textual ListView stores items in 'children'
+            if isinstance(self.focused, ListView) and self.focused.index is not None:
+                item = self.focused.children[self.focused.index]
+                if hasattr(item, "toggle"):
+                    item.toggle()
 
-        item = self.list_view.children[index]
-        if isinstance(item, AlbumItem):
-            item.toggle()
+    def action_focus_albums(self):
+        self.query_one("#album_list").focus()
 
     def action_toggle_lyrics(self):
         self.download_lyrics = not self.download_lyrics
         self.notify(f"Lyrics download: {self.download_lyrics}")
 
+    def action_focus_tracks(self):
+        self.query_one("#track_list").focus()
+
     def action_download(self):
-        selected = [
-            i for i in self.list_view.children
-            if isinstance(i, AlbumItem) and i.selected
-        ]
+        # Logic to gather jobs
+        album_list = self.query_one("#album_list", ListView)
+        track_list = self.query_one("#track_list", ListView)
+       
+        selected_albums = [a for a in album_list.children if getattr(a, "selected", False)]
+        jobs = []
 
-        if not selected:
-            self.notify("No albums selected", severity="warning")
-            return
-
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        def worker():
-            from yt_dlp import YoutubeDL
-            import time
-
-            all_files: List[Path] = []
-
-            for album in selected:
-                album_dir = self.output_dir / album.title
-                album_dir.mkdir(exist_ok=True)
-
+        if selected_albums:
+            for album in selected_albums:
                 tracks = self.album_tracks.get(album.url, [])
-                total = len(tracks)
+                for i, t in enumerate(tracks, 1):
+                    jobs.append((album, i, t))
+        else:
+            selected_tracks = [t for t in track_list.children if getattr(t, "selected", False)]
+            if not selected_tracks:
+                self.notify("Select something first!", severity="error")
+                return
 
-                for idx, track in enumerate(tracks, 1):
-                    url = track["url"]
+            for t in selected_tracks:
+                jobs.append((self.current_album, t.index, {"title": t.title, "url": t.url}))
 
-                    def hook(d):
-                        if d["status"] == "downloading":
-                            pct = d.get("_percent_str", "").strip()
-                            self.call_from_thread(
-                                self.status.msg,
-                                f"⬇ {pct} ({idx}/{total})",
-                            )
-                        elif d["status"] == "finished":
-                            all_files.append(Path(d["filename"]))
+        threading.Thread(target=self.worker, args=(jobs,), daemon=True).start()
 
-                    ydl_opts = {
-                        "format": "bestaudio/best",
-                        "outtmpl": str(album_dir / f"{idx:02d} - %(title)s.%(ext)s"),
-                        "progress_hooks": [hook],
-                        "noplaylist": True,
-                        "ignoreerrors": True,
-                    }
+    def worker(self, jobs: List[tuple]):
+        from yt_dlp import YoutubeDL
+        
+        status_area = self.query_one("#status_area", DownloadStatus)
+        log_view = self.query_one("#log_view", AppLog)
+        
+        downloaded_paths: List[Path] = []
+        total = len(jobs)
 
-                    if self.cookies:
-                        if self.cookies.lower() in {"chrome", "firefox", "edge"}:
-                            ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
-                        else:
-                            ydl_opts["cookiefile"] = self.cookies
+        # --- Phase 1: Download ---
+        for idx, (album, track_no, track) in enumerate(jobs, 1):
+            album_dir = self.output_dir / album.title
+            album_dir.mkdir(parents=True, exist_ok=True)
 
-                    with YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
+            def hook(d):
+                if d["status"] == "downloading":
+                    p_str = d.get('_percent_str', '0%').replace('%', '').strip()
+                    self.call_from_thread(status_area.update_msg, f"Downloading: {track['title']} ({p_str}%)")
 
-                    self.call_from_thread(
-                        self.status.dl,
-                        (idx / total) * 100,
-                    )
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "outtmpl": str(album_dir / f"{track_no:02d} - %(title)s.%(ext)s"),
+                "progress_hooks": [hook],
+                "quiet": True,
+                "noplaylist": True,
+                "ignoreerrors": True,
+            }
 
-            total = len(all_files)
-            done = 0
+            # Integration of Browser/File Cookie logic
+            if self.cookies:
+                if self.cookies.lower() in {"chrome", "firefox", "edge", "safari", "opera"}:
+                    ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
+                else:
+                    ydl_opts["cookiefile"] = self.cookies
 
-            for file in all_files:
-                out = file
-                album = file.parent.name
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(track["url"], download=True)
+                    if info:
+                        final_filename = Path(ydl.prepare_filename(info))
+                        downloaded_paths.append(final_filename)
+                        self.call_from_thread(log_view.info, f"Downloaded: {final_filename.name}")
+                
+                self.call_from_thread(status_area.update_dl, (idx / total) * 100)
+            except Exception as e:
+                self.call_from_thread(log_view.error, f"DL Failed [{track_no}]: {e}")
 
-                if self.target_format != file.suffix.lstrip("."):
-                    out = Path(
-                        convert_audio(str(file), self.target_format, str(file.parent))
-                    )
-                    file.unlink()
+        # --- Phase 2: Convert, Metadata & Lyrics ---
+        self.call_from_thread(status_area.update_msg, "Processing metadata & conversion...")
+        
+        proc_total = len(downloaded_paths)
+        for idx, file_path in enumerate(downloaded_paths, 1):
+            try:
+                current_file = file_path
+                album_name = file_path.parent.name
 
-                stem = out.stem
-                track_number = stem.split("-")[0].strip()
-                title = stem.split("-", 1)[-1].strip()
+                # 1. Conversion
+                actual_ext = file_path.suffix.lstrip(".")
+                if self.target_format.lower() != actual_ext.lower():
+                    self.call_from_thread(status_area.update_msg, f"Converting: {file_path.name}")
+                    new_path_str = convert_audio(str(file_path), self.target_format, str(file_path.parent))
+                    file_path.unlink() 
+                    current_file = Path(new_path_str)
+                    self.call_from_thread(log_view.info, f"Converted: {current_file.name}")
 
-                set_metadata(
-                    str(out),
-                    {
-                        "artist": self.artist,
-                        "album": album,
-                        "title": title,
-                        "tracknumber": track_number,
-                    },
-                )
+                # 2. Metadata Extraction
+                track_no_str, title_str = extract_track_title(str(current_file), self.artist)
+                tags = {
+                    "artist": self.artist,
+                    "album": album_name,
+                    "title": title_str.strip(),
+                    "tracknumber": track_no_str.strip(),
+                }
+                set_metadata(str(current_file), tags)
+                self.call_from_thread(log_view.info, f"Tags set: {current_file.name}")
 
-                # Download lyrics
+                # 3. Lyrics Integration (New Change Preserved)
                 if self.download_lyrics:
-                    lyrics = get_lyrics(title)
-                    if lyrics.get("status") == 200:
-                        lyrics_file = out.with_suffix(".lrc")
-                        lyrics_file.write_text(lyrics.get("lyrics"), encoding="utf-8")
+                    self.call_from_thread(status_area.update_msg, f"Fetching lyrics: {title_str}")
+                    lyrics_data = get_lyrics(title_str)
+                    if lyrics_data.get("status") == 200:
+                        lyrics_file = current_file.with_suffix(".lrc")
+                        lyrics_file.write_text(lyrics_data.get("lyrics"), encoding="utf-8")
+                        self.call_from_thread(log_view.info, f"Lyrics saved: {lyrics_file.name}")
 
-                done += 1
-                self.call_from_thread(self.status.cv, (done / total) * 100)
+            except Exception as e:
+                self.call_from_thread(log_view.error, f"Process error on {file_path.name}: {e}")
+            
+            self.call_from_thread(status_area.update_cv, (idx / proc_total) * 100)
 
-            self.call_from_thread(self.status.msg, "All albums processed ✔")
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.call_from_thread(status_area.update_msg, "All tasks complete! ✔")
+        self.call_from_thread(log_view.info, f"Processed {proc_total} tracks successfully.")
