@@ -8,7 +8,7 @@
 * TUI interface using Rich/Textual for a smooth terminal experience
 * Single-file executable for easy installation
 
-<img width="1888" height="991" alt="2026-01-25-044225_hyprshot" src="https://github.com/user-attachments/assets/85b362f4-7470-4ab9-b823-d67a90993f78" />
+![preview](./assets/v1.1.0.png)
 
 ---
 

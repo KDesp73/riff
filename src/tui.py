@@ -167,7 +167,7 @@ class AlbumSelector(App):
 
         # Put CLI info in a Vertical container to enforce height
         with Vertical(classes="CliPane", id="cli_pane"):
-            cli_text = f"{self.artist} @{self.handle}\nOutput: {self.output_dir}\nFormat: {self.target_format} | Lyrics: {self.download_lyrics}"
+            cli_text = f"{self.artist} @{self.handle}\nOutput: {self.output_dir}\nFormat: {self.target_format} | Download Lyrics: {self.download_lyrics}"
             yield Static(cli_text)
 
         with Horizontal(classes="TopPane"):
