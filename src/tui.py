@@ -115,47 +115,59 @@ class AlbumSelector(App):
             try:
                 all_files = []
 
-                # Step 1: Download albums
+                # Step 1: Download albums track by track
+                from yt_dlp import YoutubeDL
+
                 for album_item in selected_items:
                     album_dir = self.output_dir / album_item.title
                     album_dir.mkdir(exist_ok=True)
 
                     tracks = get_album_tracks(album_item.url)
+                    total_tracks = len(tracks)
+                    downloaded = 0
 
-                    def progress_hook(d):
-                        filename = d.get("filename", "")
-                        status = d.get("status")
-                        if status == "downloading":
-                            pct = d.get("_percent_str", "").strip()
-                            self.call_from_thread(self.status.update_status, f"⬇ {filename} {pct}")
-                        elif status == "finished":
-                            self.call_from_thread(self.status.update_status, f"✔ Finished {filename}")
-                            all_files.append(Path(filename))
+                    for idx, track_url in enumerate(tracks, 1):
+                        def progress_hook(d):
+                            filename = d.get("filename", "")
+                            status = d.get("status")
+                            if status == "downloading":
+                                pct = d.get("_percent_str", "").strip()
+                                self.call_from_thread(
+                                    self.status.update_status,
+                                    f"⬇ {filename} {pct} ({downloaded+1}/{total_tracks})"
+                                )
+                            elif status == "finished":
+                                self.call_from_thread(
+                                    self.status.update_status,
+                                    f"✔ Finished {filename}"
+                                )
+                                all_files.append(Path(filename))
 
-                    from yt_dlp import YoutubeDL
-                    ydl_opts = {
-                        "format": "bestaudio/best",
-                        "outtmpl": str(album_dir / "%(playlist_index)02d - %(title)s.%(ext)s"),
-                        "progress_hooks": [progress_hook],
-                        "retries": 10,
-                        "fragment_retries": 10,
-                        "socket_timeout": 30,
-                        "source_address": "0.0.0.0",  # Force IPv4 to avoid network errors
-                        "noplaylist": False,
-                    }
-                    if self.cookies:
-                        if self.cookies.lower() in ["chrome", "firefox", "edge"]:
-                            ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
-                        else:
-                            ydl_opts["cookiefile"] = self.cookies
+                        ydl_opts = {
+                            "format": "bestaudio/best",
+                            "outtmpl": str(album_dir / f"{idx:02d} - %(title)s.%(ext)s"),
+                            "progress_hooks": [progress_hook],
+                            "retries": 10,
+                            "fragment_retries": 10,
+                            "socket_timeout": 30,
+                            "source_address": "0.0.0.0",  # Force IPv4
+                            "noplaylist": True,  # single track
+                            "ignoreerrors": True
+                        }
+                        if self.cookies:
+                            if self.cookies.lower() in ["chrome", "firefox", "edge"]:
+                                ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
+                            else:
+                                ydl_opts["cookiefile"] = self.cookies
 
-                    # Synchronous download per album
-                    self.call_from_thread(
-                        self.status.update_status,
-                        f"Starting download: {album_item.title} ({len(tracks)} tracks)"
-                    )
-                    with YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([album_item.url])
+                        # Download single track
+                        with YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([track_url])
+                        downloaded += 1
+                        self.call_from_thread(
+                            self.status.update_download,
+                            int((downloaded / total_tracks) * 100)
+                        )
 
                 # Step 2: Conversion & Metadata
                 total_files = len(all_files)
@@ -165,7 +177,7 @@ class AlbumSelector(App):
                     out_file = Path(file)
                     album_name = file.parent.name
 
-                    # Convert if necessary
+                    # Convert if needed
                     if self.target_format != file.suffix.lstrip("."):
                         self.call_from_thread(
                             self.status.update_status,
@@ -174,7 +186,6 @@ class AlbumSelector(App):
                         out_file = Path(convert_audio(str(file), self.target_format, str(file.parent)))
                         file.unlink()  # remove original
 
-                    # Extract track number and title from filename
                     filename = file.stem
                     track_number = filename.split("-")[0].strip()
                     title = [part.strip() for part in filename.split("-")][-1]
