@@ -44,19 +44,12 @@ def download_albums(
     urls: List[str],
     progress_callback: Callable[[str], None],
     cookies: Optional[str] = None,
-    per_file_timeout: int = 300,  # seconds
+    per_album_timeout: int = 300,  # seconds
+    output_template: Optional[str] = None,
 ):
-    """
-    Downloads a list of album URLs with optional browser cookies for age-restricted content.
-    If a file download hangs longer than `per_file_timeout`, it will be skipped.
-    Reports progress via the callback.
-    """
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": "%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s",
-        "ratelimit": 2_000_000,
-        "sleep_interval": 2,
-        "max_sleep_interval": 5,
+        "outtmpl": output_template or "%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s",
         "retries": 10,
         "fragment_retries": 10,
         "socket_timeout": 30,
@@ -72,17 +65,18 @@ def download_albums(
 
     def ydl_hook(d):
         filename = d.get("filename", "")
-        if d["status"] == "downloading":
-            percent = d.get("_percent_str", "").strip()
+        status = d.get("status")
+        if status == "downloading":
+            pct = d.get("_percent_str", "").strip()
             speed = d.get("_speed_str", "")
             eta = d.get("_eta_str", "")
-            progress_callback(f"⬇ {filename} {percent} {speed} ETA {eta}")
-        elif d["status"] == "finished":
-            progress_callback(f"✔ Finished: {filename}")
+            progress_callback(f"⬇ {filename} {pct} {speed} ETA {eta}")
+        elif status == "finished":
+            progress_callback(f"✔ Finished {filename}")
 
     ydl_opts["progress_hooks"] = [ydl_hook]
 
-    def download_url(url):
+    def download_album(url):
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -90,26 +84,21 @@ def download_albums(
         except Exception as e:
             progress_callback(f"⚠ Error downloading {url}: {e}")
 
-    def worker():
-        for url in urls:
-            finished_event = threading.Event()
-            result_queue = queue.Queue()
+    def album_worker(url):
+        finished_event = threading.Event()
 
-            def target():
-                try:
-                    download_url(url)
-                finally:
-                    finished_event.set()
+        def target():
+            try:
+                download_album(url)
+            finally:
+                finished_event.set()
 
-            t = threading.Thread(target=target)
-            t.start()
+        t = threading.Thread(target=target, daemon=True)
+        t.start()
 
-            # Wait for the file to finish or timeout
-            if not finished_event.wait(timeout=per_file_timeout):
-                progress_callback(f"⏱ Timeout, skipping: {url}")
-                # Note: cannot safely kill yt_dlp thread; will continue in background
-            t.join(0)  # Don't block indefinitely
+        if not finished_event.wait(timeout=per_album_timeout):
+            progress_callback(f"⏱ Timeout, skipping album: {url}")
+        # thread continues in background, but UI is not blocked
 
-        progress_callback("All downloads attempted ✔")
-
-    threading.Thread(target=worker, daemon=True).start()
+    for url in urls:
+        threading.Thread(target=album_worker, args=(url,), daemon=True).start()

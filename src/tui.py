@@ -109,53 +109,51 @@ class AlbumSelector(App):
             self.notify("No albums selected", severity="warning")
             return
 
-        selected_urls = [item.url for item in selected_items]
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         def worker():
             try:
-                # Step 1: Compute total tracks for progress
-                album_track_counts = {}
-                total_tracks = 0
-                for item in selected_items:
-                    tracks = get_album_tracks(item.url)
-                    album_track_counts[item.title] = tracks
-                    total_tracks += len(tracks)
-
-                download_progress_counter = {"done": 0, "total": total_tracks}
-
-                # Progress callback for yt_dlp
-                def download_progress(msg: str):
-                    if msg.startswith("✔ Finished"):
-                        download_progress_counter["done"] += 1
-                        percent = (download_progress_counter["done"] / download_progress_counter["total"]) * 100
-                        self.call_from_thread(self.status.update_download, percent)
-                    self.call_from_thread(self.status.update_status, msg)
-
-                self.call_from_thread(self.status.update_status,
-                                      f"Starting download of {total_tracks} tracks…")
-                download_albums(selected_urls, download_progress, self.cookies)
-
-                # Wait until all tracks are downloaded
-                while download_progress_counter["done"] < download_progress_counter["total"]:
-                    import time
-                    time.sleep(0.5)
-
-                # Step 2: Conversion & metadata
-                self.call_from_thread(self.status.update_status, "Processing downloads…")
                 all_files = []
+
                 for album_item in selected_items:
                     album_dir = self.output_dir / album_item.title
                     album_dir.mkdir(exist_ok=True)
-                    files = list(album_dir.glob("*.webm"))
-                    all_files.extend([(album_item.title, f) for f in files])
 
-                total_files = len(all_files)
-                converted = 0
+                    # Get track URLs
+                    tracks = get_album_tracks(album_item.url)
 
-                for album_name, file in all_files:
+                    # Progress hook
+                    def progress_hook(d):
+                        status = d.get("status")
+                        filename = d.get("filename", "")
+                        if status == "downloading":
+                            percent = d.get("_percent_str", "").strip()
+                            self.call_from_thread(self.status.update_status, f"⬇ {filename} {percent}")
+                        elif status == "finished":
+                            self.call_from_thread(self.status.update_status, f"✔ Finished {filename}")
+                            all_files.append(Path(filename))
+
+                    # Synchronously download the album
+                    from yt_dlp import YoutubeDL
+                    ydl_opts = {
+                        "format": "bestaudio/best",
+                        "outtmpl": str(album_dir / "%(playlist_index)02d - %(title)s.%(ext)s"),
+                        "progress_hooks": [progress_hook],
+                        "noplaylist": False,
+                    }
+                    if self.cookies:
+                        if self.cookies.lower() in ["chrome", "firefox", "edge"]:
+                            ydl_opts["cookies_from_browser"] = (self.cookies.lower(),)
+                        else:
+                            ydl_opts["cookiefile"] = self.cookies
+
+                    with YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([album_item.url])  # <-- blocks until all tracks are fully downloaded
+
+                # Conversion & metadata
+                for file in all_files:
                     out_file = Path(file)
-                    if self.target_format != "webm":
+                    if self.target_format != file.suffix.lstrip("."):
                         self.call_from_thread(
                             self.status.update_status,
                             f"Converting {file.name} → {self.target_format}"
@@ -163,12 +161,10 @@ class AlbumSelector(App):
                         out_file = Path(convert_audio(str(file), self.target_format, str(file.parent)))
                         file.unlink()
 
-                    # Set metadata
-                    base = file.stem
-                    if " - " in base:
-                        track_number, title = base.split(" - ", 1)
-                    else:
-                        track_number, title = "", base
+                    # Metadata
+                    filename = file.stem
+                    track_number = filename.split("-")[0].strip()
+                    title = [part.strip() for part in filename.split("-")][-1]
 
                     metadata = {
                         "artist": self.artist,
@@ -178,14 +174,7 @@ class AlbumSelector(App):
                     }
                     set_metadata(str(out_file), metadata)
 
-                    converted += 1
-                    percent = (converted / total_files) * 100
-                    self.call_from_thread(self.status.update_conversion, percent)
-                    self.call_from_thread(self.status.update_status, f"Processed {out_file.name}")
-
                 self.call_from_thread(self.status.update_status, "All albums processed ✔")
-                self.call_from_thread(self.status.update_download, 100)
-                self.call_from_thread(self.status.update_conversion, 100)
 
             except Exception as e:
                 self.call_from_thread(self.status.update_status, f"Error: {e}")
