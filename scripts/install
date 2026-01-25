@@ -20,11 +20,13 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 echo "[*] Building executable"
+
 pyinstaller \
   --clean \
   --onefile \
   --name "$APP_NAME" \
   --paths src \
+  --collect-all rich \
   src/main.py
 
 echo "[*] Installing binary to $INSTALL_PATH"
