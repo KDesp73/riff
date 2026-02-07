@@ -1,7 +1,37 @@
+import json
+import time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote
+from cache import Cache
 
+cache = Cache("~/.cache/riff/lyrics.cache", ttl=60 * 60 * 24 * 7)
+ROOT_URL = "https://apic-desktop.musixmatch.com/ws/1.1/"
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Authority": "apic-desktop.musixmatch.com"
+})
+
+def _load_or_fetch_token():
+        """Manages token caching and refreshing."""
+
+        cachedToken = cache.get("token")
+        if cachedToken:
+            data = json.loads(cachedToken)
+            if data['expires_at'] > time.time():
+                return data['token']
+
+        params = {"app_id": "web-desktop-app-v1.0", "user_language": "en", "t": int(time.time() * 1000)}
+        res = session.get(f"{ROOT_URL}token.get", params=params).json()
+        
+        token = res["message"]["body"]["user_token"]
+
+        cache.set("token", json.dumps({
+            "token": token,
+            "expires_at": time.time() + 600
+        }))
+        return token
 
 def fetch_lyrics_metadata(search_term: str) -> dict:
     try:
@@ -100,3 +130,46 @@ def get_lyrics(query: str) -> dict:
             "status": 500,
             "message": str(e),
         }
+
+def get_synced_lyrics(title: str, artist: str) -> dict:
+
+    if not time or not artist:
+        return {
+            "status": 400,
+            "message": "Song title and artist name are required!",
+        }
+
+    token = _load_or_fetch_token()
+    search_params = {
+        "q_track": title,
+        "q_artist": artist,
+        "f_has_lyrics": 1,
+        "usertoken": token,
+        "app_id": "web-desktop-app-v1.0"
+    }
+    
+    search_res = session.get(f"{ROOT_URL}track.search", params=search_params).json()
+    tracks = search_res["message"]["body"].get("track_list", [])
+
+    if not tracks:
+        return {
+            "status": 404,
+            "message": f"No lyrics found for '{title}' by {artist}",
+        }
+
+    track_id = tracks[0]["track"]["track_id"]
+        
+    lrc_params = {
+        "track_id": track_id,
+        "subtitle_format": "lrc",
+        "usertoken": token,
+        "app_id": "web-desktop-app-v1.0"
+    }
+    
+    lrc_res = session.get(f"{ROOT_URL}track.subtitle.get", params=lrc_params).json()
+    lrc_content = lrc_res["message"]["body"]["subtitle"]["subtitle_body"]
+
+    return {
+        "status": 200,
+        "lyrics": lrc_content,
+    }
