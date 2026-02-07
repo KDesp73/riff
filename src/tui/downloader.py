@@ -295,7 +295,7 @@ class DownloaderScreen(Screen):
                     if info:
                         final_filename = Path(ydl.prepare_filename(info))
                         downloaded_paths.append(final_filename)
-                        self.call_later(log_view.info, f"Downloaded: {final_filename}")
+                        self.call_later(log_view.info, f"Downloaded: {final_filename.name}")
                 self.call_later(status_area.update_dl, (idx / total) * 100)
             except Exception as e:
                 self.call_later(log_view.error, f"DL Failed [{track_no}]: {e}")
