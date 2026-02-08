@@ -1,3 +1,4 @@
+
 from typing import Optional, Dict, List
 from pathlib import Path
 import threading
@@ -18,7 +19,7 @@ from textual.binding import Binding
 
 from downloader import get_album_tracks, get_artist_albums
 from metadata import set_metadata
-from lyrics import get_lyrics
+from lyrics import LyricsDownloader, get_lyrics, get_synced_lyrics
 from converter import convert_audio
 from utils import extract_track_title
 
@@ -279,7 +280,7 @@ class DownloaderScreen(Screen):
                 "progress_hooks": [hook],
                 "quiet": True,
                 "noplaylist": True,
-                "ignoreerrors": True,
+                "ignoreerrors": False,
             }
 
             if self.cookies:
@@ -331,11 +332,11 @@ class DownloaderScreen(Screen):
                 # 3. Lyrics
                 if self.download_lyrics:
                     self.call_later(status_area.update_msg, f"Fetching lyrics: {title_str}")
-                    lyrics_data = get_lyrics(title_str)
-                    if lyrics_data.get("status") == 200:
-                        lyrics_file = current_file.with_suffix(".lrc")
-                        lyrics_file.write_text(lyrics_data.get("lyrics"), encoding="utf-8")
-                        self.call_later(log_view.info, f"Lyrics saved: {lyrics_file.name}")
+                    lyrics_downloader = LyricsDownloader(tags["artist"], tags["title"], current_file)
+                    lyrics_download_data = lyrics_downloader.download_lyrics()
+                    if lyrics_download_data.get("status") == 200:
+                        self.call_later(log_view.info, lyrics_download_data.get("message"))
+                    
 
             except Exception as e:
                 self.call_later(log_view.error, f"Process error on {file_path.name}: {e}")
